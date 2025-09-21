@@ -1,33 +1,14 @@
 # app/routers/auth.py
 from datetime import datetime, timedelta, timezone
-import os
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import jwt, JWTError, ExpiredSignatureError
-from passlib.context import CryptContext
-from pydantic import BaseModel
+from app.config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES, pwd, USERS
+from app.schemas.auth import Token, MeResponse
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
-# --- Basit ayarlar ---
-SECRET_KEY = os.getenv("SECRET_KEY", "CHANGE_ME_TO_A_LONG_RANDOM_SECRET")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
-
-pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-# Demo kullanıcı: username=demo, password=demo123
-USERS = {"demo": {"username": "demo", "hashed": pwd.hash("demo123")}}
-
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
-
-# --- Schemas (isteğe bağlı ama temiz) ---
-class Token(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-
-class MeResponse(BaseModel):
-    username: str
 
 # --- Helpers ---
 def create_access_token(sub: str) -> str:
@@ -46,7 +27,6 @@ async def get_current_username(token: str = Depends(oauth2_scheme)) -> str:
     try:
         return decode_username(token)
     except ExpiredSignatureError:
-        # Önemli: OAuth2 için bu header’ı ekle
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token expired",
