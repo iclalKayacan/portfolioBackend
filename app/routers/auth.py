@@ -1,57 +1,71 @@
-# app/routers/auth.py
-from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from jose import jwt, JWTError, ExpiredSignatureError
-from app.config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES, pwd, USERS
-from app.schemas.auth import Token, MeResponse
+from sqlalchemy.orm import Session
+from app.database import get_db
+from app.schemas.user import UserCreate, UserResponse
+from app.services.user_service import create_user, get_user_by_username
+from app.services.auth_service import (
+    create_access_token,
+    create_refresh_token,
+    authenticate_user,
+    verify_token,
+)
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
+# OAuth2 scheme
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
-# --- Helpers ---
-def create_access_token(sub: str) -> str:
-    exp = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    payload = {"sub": sub, "exp": exp}
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
-
-def decode_username(token: str) -> str:
-    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-    username = payload.get("sub")
-    if not username:
-        raise JWTError("no sub")
-    return username
-
-async def get_current_username(token: str = Depends(oauth2_scheme)) -> str:
-    try:
-        return decode_username(token)
-    except ExpiredSignatureError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token expired",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    except JWTError:
+# Authentication dependency
+async def get_current_username(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> str:
+    payload = verify_token(token)
+    if not payload or payload.get("type") != "access":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-
-# --- Routes ---
-@router.post("/login", response_model=Token)
-def login(form: OAuth2PasswordRequestForm = Depends()):
-    user = USERS.get(form.username)
-    if not user or not pwd.verify(form.password, user["hashed"]):
+    
+    username = payload.get("sub")
+    if not username:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
+            detail="Invalid token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    token = create_access_token(sub=user["username"])
-    return {"access_token": token, "token_type": "bearer"}
+    
+    return username
 
-@router.get("/me", response_model=MeResponse)
-def me(username: str = Depends(get_current_username)):
-    return {"username": username}
+# ✅ Kullanıcı kaydı
+@router.post("/register", response_model=UserResponse)
+def register(user: UserCreate, db: Session = Depends(get_db)):
+    db_user = create_user(db, user)
+    return db_user
+
+# ✅ Kullanıcı girişi
+@router.post("/login")
+def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = authenticate_user(db, form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    access_token = create_access_token({"sub": user.username})
+    refresh_token = create_refresh_token({"sub": user.username})
+
+    return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer"}
+
+# ✅ Refresh token ile yeni access token alma
+@router.post("/refresh")
+def refresh_token(refresh_token: str):
+    payload = verify_token(refresh_token)
+    if not payload or payload.get("type") != "refresh":
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    new_access = create_access_token({"sub": payload["sub"]})
+    return {"access_token": new_access, "token_type": "bearer"}
+
+# ✅ Mevcut kullanıcı bilgileri
+@router.get("/me", response_model=UserResponse)
+def me(username: str = Depends(get_current_username), db: Session = Depends(get_db)):
+    user = get_user_by_username(db, username)
+    return user
