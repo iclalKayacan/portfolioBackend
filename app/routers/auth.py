@@ -1,71 +1,55 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from app.database import get_db
 from app.schemas.user import UserCreate, UserResponse
-from app.services.user_service import create_user, get_user_by_username
-from app.services.auth_service import (
-    create_access_token,
-    create_refresh_token,
-    authenticate_user,
-    verify_token,
-)
+from app.services.user_service import create_user, get_user_by_email
+from app.services.auth_service import create_access_token, create_refresh_token, authenticate_user, verify_token
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
+limiter = Limiter(key_func=get_remote_address)
 
-# OAuth2 scheme
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
-# Authentication dependency
-async def get_current_username(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> str:
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     payload = verify_token(token)
     if not payload or payload.get("type") != "access":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise HTTPException(status_code=401, detail="Invalid token")
     
-    username = payload.get("sub")
-    if not username:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    return username
+    email = payload.get("sub")
+    user = get_user_by_email(db, email)
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
 
-# ✅ Kullanıcı kaydı
 @router.post("/register", response_model=UserResponse)
-def register(user: UserCreate, db: Session = Depends(get_db)):
-    db_user = create_user(db, user)
-    return db_user
+@limiter.limit("5/minute")  # 5 kayıt per minute
+def register(request: Request, user: UserCreate, db: Session = Depends(get_db)):
+    return create_user(db, user)
 
-# ✅ Kullanıcı girişi
 @router.post("/login")
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+@limiter.limit("10/minute") 
+def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
-        raise HTTPException(status_code=401, detail="Invalid username or password")
-
-    access_token = create_access_token({"sub": user.username})
-    refresh_token = create_refresh_token({"sub": user.username})
-
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    access_token = create_access_token({"sub": user.email})
+    refresh_token = create_refresh_token({"sub": user.email})
     return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer"}
 
-# ✅ Refresh token ile yeni access token alma
 @router.post("/refresh")
-def refresh_token(refresh_token: str):
+@limiter.limit("20/minute") 
+def refresh_token(request: Request, refresh_token: str):
     payload = verify_token(refresh_token)
     if not payload or payload.get("type") != "refresh":
         raise HTTPException(status_code=401, detail="Invalid refresh token")
-
+    
     new_access = create_access_token({"sub": payload["sub"]})
     return {"access_token": new_access, "token_type": "bearer"}
 
-# ✅ Mevcut kullanıcı bilgileri
 @router.get("/me", response_model=UserResponse)
-def me(username: str = Depends(get_current_username), db: Session = Depends(get_db)):
-    user = get_user_by_username(db, username)
-    return user
+def me(current_user = Depends(get_current_user)):
+    return current_user

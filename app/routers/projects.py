@@ -9,7 +9,7 @@ from app.services.project_service import (
     update_project as update_project_service,
     delete_project as delete_project_service
 )
-from app.routers.auth import get_current_username
+from app.routers.auth import get_current_user
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
@@ -25,7 +25,7 @@ def get_project(project_id: int, db: Session = Depends(get_db)):
 def create_project(
     project: Project,
     db: Session = Depends(get_db),
-    username: str = Depends(get_current_username),
+    current_user = Depends(get_current_user),
 ):
     return create_project_service(db, project)
 
@@ -34,7 +34,7 @@ def update_project(
     project_id: int,
     updated: Project,
     db: Session = Depends(get_db),
-    username: str = Depends(get_current_username),
+    current_user = Depends(get_current_user),
 ):
     return update_project_service(db, project_id, updated)
 
@@ -42,7 +42,7 @@ def update_project(
 def delete_project(
     project_id: int,
     db: Session = Depends(get_db),
-    username: str = Depends(get_current_username),
+    current_user = Depends(get_current_user),  # Only authenticated users can delete
 ):
     deleted_project = delete_project_service(db, project_id)
     return {"message": "Project deleted", "project_id": project_id}
